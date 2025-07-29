@@ -1,0 +1,205 @@
+!pip install nltk contractions emoji pyspellchecker
+
+import pandas as pd
+import numpy as np
+import re
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer, PorterStemmer
+import string
+from bs4 import BeautifulSoup
+import contractions
+import emoji
+from spellchecker import SpellChecker
+
+from sklearn.model_selection import train_test_split
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import (
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    classification_report,
+    confusion_matrix
+)
+
+from sklearn.feature_extraction.text import CountVectorizer
+
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+df = pd.read_csv("/content/labeled_final_test.csv")
+df.head(10)
+
+# Download NLTK data (only needs to run once)
+nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('wordnet')
+stop_words = set(stopwords.words('english'))
+
+stemmer = PorterStemmer()
+lemmatizer = WordNetLemmatizer()
+spell = SpellChecker()
+
+def preprocess_text(text):
+    text = text.lower()  # Convert to lowercase
+    text = re.sub(r'\W', ' ', text)  # Remove special characters
+    words = text.split()
+
+    # Initialize lemmatizer and stemmer
+    lemmatizer = WordNetLemmatizer()
+    stemmer = PorterStemmer()
+
+    # Remove stopwords, apply lemmatization and stemming
+    processed_words = [stemmer.stem(lemmatizer.lemmatize(word)) for word in words if word not in stopwords.words('english')]
+
+    return ' '.join(processed_words)
+
+# Clean both sentences before splitting
+df['sentence1'] = df['sentence1'].apply(preprocess_text)
+df['sentence2'] = df['sentence2'].apply(preprocess_text)
+
+import spacy
+
+# Load spaCy English model
+import en_core_web_sm
+nlp = en_core_web_sm.load()
+
+def tag_text_with_ner_pos(text):
+    doc = nlp(text)
+    tagged_tokens = []
+    for token in doc:
+        word = token.text.lower()
+        pos = token.pos_  # e.g., NOUN, VERB
+        ner = token.ent_type_ if token.ent_type_ else "O"  # e.g., PERSON, ORG, etc., or O = no entity
+        tagged_token = f"{ner}_{pos}_{word}"
+        tagged_tokens.append(tagged_token)
+    return " ".join(tagged_tokens)
+
+# Clean both sentences before splitting
+df['sentence1'] = df['sentence1'].apply(tag_text_with_ner_pos)
+df['sentence2'] = df['sentence2'].apply(tag_text_with_ner_pos)
+
+def extract_pos_tags(text):
+    doc = nlp(text)
+    return [(token.text, token.pos_) for token in doc]
+
+# Function to get Named Entities
+def extract_named_entities(text):
+    doc = nlp(text)
+    return [(ent.text, ent.label_) for ent in doc.ents]
+
+# Assuming 'df' still has original sentence text
+
+# Extract Named Entities separately
+df['sentence1_entities'] = df['sentence1'].apply(extract_named_entities)
+df['sentence2_entities'] = df['sentence2'].apply(extract_named_entities)
+
+# (Optional) Also POS tags if needed
+df['sentence1_pos'] = df['sentence1'].apply(extract_pos_tags)
+df['sentence2_pos'] = df['sentence2'].apply(extract_pos_tags)
+
+from sklearn.feature_extraction.text import TfidfVectorizer
+import numpy as np
+
+# Create the TfidfVectorizer
+tfidf = TfidfVectorizer(max_features=5000)
+
+# Fit and transform the sentences into TF-IDF matrices
+sentence1_list = df['sentence1'].astype(str).tolist()
+sentence2_list = df['sentence2'].astype(str).tolist()
+
+X1 = tfidf.fit_transform(sentence1_list)  # Fit and transform sentence1
+X2 = tfidf.transform(sentence2_list)      # Transform sentence2 using the same vectorizer
+
+# Convert sparse matrices to dense numpy arrays for concatenation
+X1_dense = X1.toarray()  # Convert X1 to a dense array
+X2_dense = X2.toarray()  # Convert X2 to a dense array
+
+# Concatenate X1 and X2 along axis=1 (columns)
+X = np.concatenate((X1_dense, X2_dense), axis=1)
+
+# Labels
+y = df['label']
+
+# Now X and y are ready for training
+
+from sklearn.model_selection import train_test_split
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import classification_report, confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+model = LogisticRegression()
+model.fit(X_train, y_train)
+
+y_pred = model.predict(X_test)
+
+print("Classification Report:\n", classification_report(y_test, y_pred))
+
+# Confusion Matrix
+cm = confusion_matrix(y_test, y_pred)
+sns.heatmap(cm, annot=True, fmt="d",cmap="Blues", xticklabels=["Negative", "Positive"], yticklabels=["Negative", "Positive"])
+plt.xlabel("Predicted")
+plt.ylabel("Actual")
+plt.title("Confusion Matrix")
+plt.show()
+
+from sklearn.model_selection import GridSearchCV
+
+param_grid = {
+    'C': [0.1, 1, 10],
+    'solver': ['liblinear', 'lbfgs'],
+    'class_weight': [None, 'balanced']
+}
+
+grid = GridSearchCV(LogisticRegression(random_state=42), param_grid, cv=5, scoring='f1_macro')
+grid.fit(X_train, y_train)
+
+print("Best Parameters:", grid.best_params_)
+best_model = grid.best_estimator_
+
+y_pred = best_model.predict(X_test)
+print(classification_report(y_test, y_pred))
+
+import joblib
+
+# Save the trained model
+joblib.dump(best_model, 'model.pkl')
+
+# Save the TF-IDF vectorizer
+joblib.dump(tfidf, 'tfidf_vectorizer.pkl')
+
+ # Load your trained model and vectorizer
+import joblib
+model = joblib.load("/content/model.pkl")
+vectorizer = joblib.load("/content/tfidf_vectorizer.pkl")
+
+sentence1 = "She finished her homework before dinner."
+sentence2 = "Rabit is eating snacks."
+
+# Preprocess if needed (e.g., lowercase, remove punctuation, etc.)
+def preprocess(text):
+    return text.lower()
+
+s1 = preprocess(sentence1)
+s2 = preprocess(sentence2)
+
+# Transform using the fitted TF-IDF vectorizer
+v1 = vectorizer.transform([s1])
+v2 = vectorizer.transform([s2])
+
+# Combine vectors (e.g., concatenate)
+X_test_pair = np.hstack((v1.toarray(), v2.toarray()))
+
+# Predict
+prediction = model.predict(X_test_pair)[0]
+
+if prediction == 1:
+    print(" Paraphrase Detected")
+else:
+    print(" Not a Paraphrase")
